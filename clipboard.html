@@ -1,0 +1,40 @@
+<div class="gameLineSpace">
+  <div class="gameLine">
+    <div class="gameStatus">Playing</div>
+    <div class="gameP1">Neil</div>
+    <div class="gameP2">Membot</div>
+  </div>
+</div>
+<div class="gameLineSpace">
+  <div class="gameLine" id="2">
+    <div class="gameStatus">WAITING</div>
+    <div class="gameP1">Neil</div>
+    <div class="gameP2">Membot</div>
+  </div>
+</div>
+<div class="gameLineSpace">
+  <div class="gameLine" id="3">
+    <div class="gameStatus">NEW</div>
+    <div class="gameP1"> </div>
+    <div class="gameP2"> </div>
+  </div>
+</div>
+
+Server to Client
+
+Type: "GamesInProgress"
+Games: [Array of Games]
+
+Client to Server
+
+Type: "JoinGame"
+Idx: int
+Name: string
+
+Type: "NewGame"
+Idx: int
+Tmax: int
+Name: string
+
+Type: "Flip"
+Tile: int

@@ -1,0 +1,84 @@
+.grid {
+  display: flex;
+  flex-wrap: wrap;
+  height: 680px;
+  width: 850px;
+  border: 1px solid;
+}
+img.faceDown {
+  border: 1px solid ;
+  box-shadow: 0px 0px 8px 3px #888888;
+}
+img.faceUpRed {
+  border: 1px #ab1a21 ;
+  box-shadow: 0px 0px 8px 3px #ab1a21;
+}
+img.faceUpAqua {
+  border: 1px #02d0e3 ;
+  box-shadow: 0px 0px 8px 3px #02d0e3;
+}
+img.faceUpBlue {
+  border: 1px #023ee3 ;
+  box-shadow: 0px 0px 8px 3px #023ee3;
+}
+img.faceUpGreen {
+  border: 1px #36e302 ;
+  box-shadow: 0px 0px 8px 3px #36e302;
+}
+img.faceUpPink {
+  border: 1px #e302e3 ;
+  box-shadow: 0px 0px 8px 3px #e302e3;
+}
+img.empty {
+  border: 1px white ;
+}
+div.tilespace {
+  height: 150px;
+  width: 150px;
+  padding: 10px;
+  overflow: hidden;
+}
+div.gameSelect {
+  margin-left: 25px;
+  margin-bottom: 25px;
+  /*font-family: "Lucida Console", "Courier New", monospace;*/
+}
+div.gameLineSpace {
+  border: 1px solid ;
+  height: 40px;
+  width: 800px;
+  padding: 10px;
+}
+div.gameLine {
+  background-color: #b4d4de ;
+}
+div.gameNewGameButton {
+  display: inline-block;
+  margin-left: 50px;
+  width: 100px;
+  padding: 10px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  -ms-transform: translate(-50%, -50%);
+  transform: translate(-50%, -50%);
+}
+div.gameStatus {
+  display: inline-block;
+  margin-left: 50px;
+  width: 100px;
+  padding: 10px;
+}
+div.gameP1 {
+  display: inline-block;
+  margin-left: 10px;
+  width: 100px;
+  padding: 10px;
+}
+div.gameP2 {
+  display: inline-block;
+  margin-left: 10px;
+  /*height: 150px;*/
+  width: 100px;
+  padding: 10px;
+}

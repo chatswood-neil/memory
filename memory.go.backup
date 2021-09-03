@@ -1,0 +1,643 @@
+package xxx
+
+import (
+	"fmt"
+	"log"
+	"net/http"
+	"strconv"
+	"sync"
+	"time"
+
+	"math/rand"
+
+	"github.com/gorilla/websocket"
+)
+
+// ---------------------------------------------------------------------------
+// A two-player tile-turning memory game
+// CLient-server
+// Real-time game play against a second player or against the computer
+// in a separate thread
+// 1. Initialise board and websocket
+// 2. Start game - this involves spawning a bot opponent thread
+// 3.
+// ---------------------------------------------------------------------------
+
+var game_wg sync.WaitGroup = sync.WaitGroup{}
+
+func main() {
+	// Start an (immortal) webserver
+	// This will serve images for the life of the game
+	//
+}
+
+func boardManager() {
+	var tMax int = 20
+	var gamesWonP1 int = 0
+	var gamesWonP2 int = 0
+
+	// -------------------------------------------------------------------------
+	// Create the channels
+	// -------------------------------------------------------------------------
+
+	p1_board_ch := make(chan string, 10)
+	p1_move_ch := make(chan string, 10)
+	p2_board_ch := make(chan string, 10)
+	p2_move_ch := make(chan string, 10)
+
+	//var mem1 = make([]int, tMax)
+	//var state1 = make([]int, tMax)
+	//var mem2 = make([]int, tMax)
+	//var state2 = make([]int, tMax)
+	var board = make([]int, tMax)
+	var disp = make([]int, tMax)
+	var game int = 0
+	var move int = 0
+
+	for {
+		game++
+		move = 0
+		initBoard(tMax, board[:], disp[:])
+
+		game_wg.Add(2)
+
+		go bot(1, tMax, 50, 50, p1_board_ch, p1_move_ch)
+		go bot(2, tMax, 10, 99, p2_board_ch, p2_move_ch)
+
+		for {
+			// Block until a (F)lip or a (N)o Move received from a player
+			move++
+			select {
+			case msg := <-p1_move_ch:
+				if msg[0:1] == "F" {
+					tile, _ := strconv.Atoi(msg[1:4])
+					//log.Println("Board ", game, move, ": Player 1 flipped tile", tile)
+					flipTile(1, tMax, tile, p1_board_ch, p2_board_ch, board[:], disp[:])
+				} else {
+					//log.Println("Board ", game, move, ": Player 1 no move")
+				}
+			case msg := <-p2_move_ch:
+				if msg[0:1] == "F" {
+					tile, _ := strconv.Atoi(msg[1:4])
+					//log.Println("Board ", game, move, ": Player 2 flipped tile", tile)
+					flipTile(2, tMax, tile, p1_board_ch, p2_board_ch, board[:], disp[:])
+				} else {
+					//log.Println("Board ", game, move, ": Player 2 no move")
+				}
+			}
+
+			// Display game state
+			//textDisplay(tMax, board[:], disp[:])
+
+			// Check if game finished
+			finished, player := isGameFinished(tMax, disp[:])
+			if finished {
+				var msg string
+				if player == 0 {
+					msg = "Game tied"
+				} else if player > 0 {
+					msg = "Game won by player 1"
+					gamesWonP1++
+				} else {
+					msg = "Game won by player 2"
+					gamesWonP2++
+				}
+				fmt.Println("Board ", game, move, ":", msg)
+				break
+			}
+		} // Loop until end of game
+		game_wg.Wait() // Wait for all bots to terminate
+
+		fmt.Println("Board ", game, move, ": LEADERBOARD", gamesWonP1, "VS", gamesWonP2)
+		fmt.Println("-------------------------------------")
+	} // Loop - play games indefinitely
+}
+
+func initBoard(tMax int, board, disp []int) {
+	for t := 0; t < tMax; t++ {
+		disp[t] = 0
+		board[t] = 0
+	}
+	for id := 0; id < int(tMax/2); id++ {
+		for x := 1; x < 3; x++ {
+			t := rand.Intn(tMax)
+			for {
+				if board[t] == 0 {
+					board[t] = id
+					break
+				}
+				t++
+				if t == tMax {
+					t = 0
+				}
+			}
+		}
+	}
+	//log.Println("Board initialised")
+	textDisplay(tMax, board[:], disp[:])
+}
+
+func isGameFinished(tMax int, disp []int) (fin bool, player int) {
+	player1 := 0
+	player2 := 0
+	for t := 0; t < tMax; t++ {
+		if disp[t] == 0 { // If any face-down tile, game not finished
+			return false, 0
+		}
+		if disp[t] == 11 {
+			player1++
+		} else if disp[t] == 22 {
+			player2++
+		}
+	}
+
+	return true, player1 - player2
+}
+
+func textDisplay(tMax int, board, disp []int) {
+	fmt.Print("  +")
+	for t := 0; t < tMax; t++ {
+		fmt.Printf("%02d+", t)
+	}
+	fmt.Print("\n  |")
+	for t := 0; t < tMax; t++ {
+		fmt.Printf("%02d|", board[t])
+	}
+	fmt.Print("\n  |")
+	for t := 0; t < tMax; t++ {
+		fmt.Printf("%02d|", disp[t])
+	}
+	fmt.Print("\n\n")
+}
+
+// ---------------------------------------------------------------------------
+// Process the flipping of a tile.
+//
+// This function is synchronous, as no async update of disp is permitted.
+//
+// Disp has following values
+//  0: face-down
+//  1: face-up - flipped by player 1
+//  2: face-up - flipped by player 2
+//  11: hidden - won by player 1
+//  22: hidden - won by player 2
+//
+// Messages sent: (F)lip, (O)pponent flip, return to face-(D)own, (R)emove
+//
+// ---------------------------------------------------------------------------
+
+func flipTile(p, tMax int, flip_tile int, p1_ch, p2_ch chan string,
+	board, disp []int) {
+
+	// First ensure the tile can be flipped - if not, then ignore and do not
+	// advise players. This is expected frequently due to race conditions.
+	if disp[flip_tile] != 0 {
+		//log.Println("Board manager: ")
+		return
+	}
+
+	// Determine set of previously upturned tiles
+	// Also count face-down tiles
+	me_up1 := -1
+	me_up2 := -1
+	opp_up1 := -1
+	//opp_up2 := -1
+
+	for t := 0; t < tMax; t++ {
+		if disp[t] == 1 || disp[t] == 2 {
+			if disp[t] == p {
+				if me_up1 == -1 {
+					me_up1 = t
+				} else {
+					me_up2 = t
+				}
+			} else {
+				if opp_up1 == -1 {
+					opp_up1 = t
+				}
+				//else {
+				//	opp_up2 = t
+				//}
+			}
+		}
+	}
+
+	// If current player has two tiles up, face them both down
+	if me_up1 >= 0 && me_up2 >= 0 {
+		disp[me_up1] = 0
+		disp[me_up2] = 0
+		d_str := fmt.Sprintf("D%03d%03d", me_up1, me_up2)
+		p1_ch <- d_str
+		p2_ch <- d_str
+		me_up1 = -1
+		me_up2 = -1
+	}
+
+	// Flip tile and advise both players of revealed tile ID
+	flip_id := board[flip_tile]
+	disp[flip_tile] = p
+	f_str := fmt.Sprintf("F%03d%03d", flip_tile, flip_id)
+	o_str := fmt.Sprintf("O%03d%03d", flip_tile, flip_id)
+	if p == 1 {
+		p1_ch <- f_str
+		p2_ch <- o_str
+	} else {
+		p1_ch <- o_str
+		p2_ch <- f_str
+	}
+
+	// Determine if flipped tile is part of a matched pair.
+	// Note that a guzump is only possible if only upface tile is opponent's.
+
+	match_tile := -1
+	if me_up1 >= 0 {
+		if flip_id == board[me_up1] {
+			match_tile = me_up1 // Normal two-tile win
+		}
+	} else if opp_up1 >= 0 && flip_id == board[opp_up1] {
+		match_tile = opp_up1 // Guzump win
+	}
+
+	if match_tile == -1 {
+		return
+	}
+
+	// Mark both as won by current player.
+	// Advise both players of removal from board.
+	win := p * 11
+	disp[match_tile] = win
+	disp[flip_tile] = win
+	rm_str := fmt.Sprintf("R%03d%03d", flip_tile, match_tile)
+	p1_ch <- rm_str
+	p2_ch <- rm_str
+
+	return
+}
+
+// ----------------------------------------------------------------------------
+// HTTP/Websocket functions
+// ----------------------------------------------------------------------------
+
+func HttpsServer(port int) {
+	var serverAddr string = fmt.Sprintf(":%d", port)
+
+	// HTTP request multiplexer. URL of request is matched against the
+	// registered patterns to findhandler function.
+	//
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", gamePageServe)
+	mux.HandleFunc("/favicon.ico", faviconServe)
+	mux.HandleFunc("/game/", wssGame)
+
+	// ListenAndServeTLS blocks and loops indefinitely
+
+	fmt.Printf("Listening on port %d (%s)...\n", port, serverAddr)
+
+	log.Fatal(http.ListenAndServeTLS(serverAddr, "cert.pem", "key.pem", mux))
+
+	// To generate certificates:
+	// go run "C:\Program Files\Go\src\crypto\tls\generate_cert.go" -host="127.0.0.1"
+}
+
+func gamePageServe(w http.ResponseWriter, r *http.Request) {
+	//fmt.Println("Serve file for request:", r)
+	//fmt.Println("File path:", r.URL.Path[1:])
+	http.ServeFile(w, r, "memory.html")
+}
+
+func faviconServe(w http.ResponseWriter, r *http.Request) {
+	http.ServeFile(w, r, "favicon.ico")
+}
+
+// ---------------------------------------------------------------------------
+
+func wssGame(w http.ResponseWriter, r *http.Request) {
+
+	// -------------------------------------------------------------------------
+	// Define states
+	// -------------------------------------------------------------------------
+
+	// -------------------------------------------------------------------------
+	// Startup the websocket
+	// -------------------------------------------------------------------------
+
+	var conn *websocket.Conn
+	conn = startWebsocket(w, r)
+	defer conn.Close()
+
+	// -------------------------------------------------------------------------
+	// Create the channels
+	// -------------------------------------------------------------------------
+
+	p1_board_chan := make(chan string)
+	p1_move_chan := make(chan string)
+	p2_board_chan := make(chan string)
+	p2_move_chan := make(chan string)
+
+	defer close(p1_board_chan)
+	defer close(p1_move_chan)
+	defer close(p2_board_chan)
+	defer close(p2_move_chan)
+
+	// -------------------------------------------------------------------------
+	// Waitgroup
+	// This function spawns three goroutines and then waits on this waitgroup.
+	// When the reader thread receives a closeConnection message, it will
+	// terminate and signal waitgroup to unblock, which will close the socket
+	// and end the service.
+	// -------------------------------------------------------------------------
+
+	socket_wg := new(sync.WaitGroup)
+	socket_wg.Add(1)
+
+	// -------------------------------------------------------------------------
+	// Spawn two bots
+	// -------------------------------------------------------------------------
+
+	//var mem1 = make([]int, 20)
+	//var state1 = make([]int, 20)
+	//var mem2 = make([]int, 20)
+	//var state2 = make([]int, 20)
+
+	go bot(1, 20, 20, 100, p1_board_chan, p1_move_chan)
+	go bot(2, 20, 20, 100, p2_board_chan, p2_move_chan)
+
+	for {
+		// Loop until game finishes
+	}
+
+	// -------------------------------------------------------------------------
+	// When client has requested to close, this call will unblock, the socket
+	// will be closed, and the service will end
+	// -------------------------------------------------------------------------
+
+	socket_wg.Wait()
+}
+
+// ---------------------------------------------------------------------------
+// Start Websocket by sending upgrade HTTP message
+// ---------------------------------------------------------------------------
+
+var upgrader = websocket.Upgrader{
+	ReadBufferSize:  1024,
+	WriteBufferSize: 1024,
+}
+
+func startWebsocket(w http.ResponseWriter, r *http.Request) *websocket.Conn {
+	upgrader.CheckOrigin = func(r *http.Request) bool { return true }
+
+	// upgrade this connection to a WebSocket connection
+
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Fatalln(err)
+	}
+
+	log.Println("Client upgraded to WebSocket")
+
+	if conn == nil {
+		log.Fatalln("WS connection closed or lost")
+	}
+
+	return conn
+}
+
+// ---------------------------------------------------------------------------
+// A memory-game bot
+//  p = player 1 or 2
+//  tMax = number of tiles in tile arrays
+//  mem = a slice/array of remembered tile IDs indexed by tile number
+//  state = a slice/array of tile states
+//          (0 = face-down, 1 = taken, 2 = face-up-you, 3 = face-up-opp)
+//  known = a slice/array of tile numbers, indexed by tile ID
+//  board = chan for game board to advise state-change on board
+//  move =  chan to advise game board of next move (flip, hide)
+// ---------------------------------------------------------------------------
+
+func bot(p, tMax, slowPc, memPc int, board, move chan string) {
+	var mem = make([]int, tMax)
+	var state = make([]int, tMax)
+
+	if slowPc < 10 || slowPc > 100 {
+		slowPc = 100
+	}
+	if memPc < 20 || memPc > 100 {
+		memPc = 100
+	}
+	log.Printf("Bot %d started - Slow PC %d - Memory PC %d\n", p, slowPc, memPc)
+
+	var tile, tileId int
+	for {
+		// Read board updates, and update in the memory map
+	channel_read_loop:
+		for {
+			select {
+			case b := <-board:
+				if b[0] == 'F' {
+					// This bot flipped tile
+					tile, _ = strconv.Atoi(b[1:4])
+					tileId, _ = strconv.Atoi(b[4:7])
+					mem[tile] = tileId
+					//log.Println("Bot", p, "I flipped", tile, "and revealed", mem[tile])
+					state[tile] = 2
+				} else if b[0] == 'O' {
+					// Opponent flipped tile
+					tile, _ = strconv.Atoi(b[1:4])
+					tileId, _ = strconv.Atoi(b[4:7])
+					mem[tile] = tileId
+					//log.Println("Bot", p, "Opponent flipped", tile, "and revealed", mem[tile])
+					state[tile] = 3
+				} else if b[0] == 'D' {
+					// Tiles returned to face-down - Bot could forget at this point
+					tile, _ = strconv.Atoi(b[1:4])
+					forgetTile(tile, memPc, mem[:])
+					//log.Println("Bot", p, "vvvv", tile, "vvvv")
+					state[tile] = 0
+					tile, _ = strconv.Atoi(b[4:7])
+					forgetTile(tile, memPc, mem[:])
+					//log.Println("Bot", p, "vvvv", tile, "vvvv")
+					state[tile] = 0
+				} else if b[0] == 'R' {
+					// Matched tiles removed from board
+					tile, _ = strconv.Atoi(b[1:4])
+					//log.Println("Bot", p, "MATCHED and removed", tile)
+					state[tile] = 1
+					tile, _ = strconv.Atoi(b[4:7])
+					//log.Println("Bot", p, "MATCHED and removed", tile)
+					state[tile] = 1
+				} else {
+					//log.Fatalln("Bot", p, "Fatal: Unknown msg on channel")
+				}
+			default:
+				break channel_read_loop
+			}
+		}
+
+		// For debug purposes, display state of tiles
+		fmt.Print("Bot ", p, " ")
+		for t := 0; t < tMax; t++ {
+			if state[t] == 0 {
+				fmt.Print("|--")
+			} else if state[t] == 1 {
+				fmt.Print("|  ")
+			} else {
+				fmt.Printf("|%02d", state[t])
+			}
+		}
+		fmt.Println("|")
+
+		// Choose and communicate a move
+		tile, noMove := botChoose(p, tMax, mem[:], state[:])
+		if noMove {
+			move <- "N"
+			//log.Println("Bot", p, "terminated")
+			game_wg.Done()
+			return
+		} else {
+			flip_str := fmt.Sprintf("F%03d", tile)
+			move <- flip_str
+		}
+
+		// Sleepy time for 'lil bot-bot
+		// 100% slow (max): Sleep between 1000 and 2000 milliseconds
+		// 10% slow (min): Sleep between 100 and 200 milliseconds
+		s := 10 * slowPc
+		time.Sleep(time.Duration(s+rand.Intn(s)) * time.Millisecond)
+	}
+}
+
+func forgetTile(tile, memPercent int, mem []int) {
+	r := rand.Intn(100)
+	if r >= memPercent {
+		mem[tile] = 0
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Bot chooses tile to flip.
+//
+// This function has no state other than the memory-map of the board. i.e. A
+// call to this function independently re-evaluates next move based solely on
+// the current state of the board upon entry.
+//
+// Returns: tile to flip next
+// ---------------------------------------------------------------------------
+
+func botChoose(p, tMax int, mem []int, state []int) (int, bool) {
+
+	// Are there any upturned tiles? This decides whether move 1 or 2 or guzump
+	// Also ensure there is at least one face-down tile on board.
+	myTilesUpCnt := 0
+	myTileId := 0
+	//myTileNum := -1
+	oppTilesUpCnt := 0
+	oppTileId := 0
+	faceDownCnt := 0
+	for t := 0; t < tMax; t++ {
+		if state[t] == 2 {
+			myTilesUpCnt++
+			myTileId = mem[t]
+			//myTileNum = t
+		} else if state[t] == 3 {
+			oppTilesUpCnt++
+			oppTileId = mem[t]
+		} else if state[t] == 0 {
+			faceDownCnt++
+		}
+	}
+
+	// If no tiles face-down, no valid picks, so return error
+	if faceDownCnt == 0 {
+		//log.Println("Bot", p, "": No tiles are face-down")
+		return 0, true
+	}
+
+	// If you have one tile upturned (second move), there are three possibilities:
+	// 1. We remember a hidden tile with same value -> choose it
+	// 2. Our opponent has upturned same tile as us -> choose a random tile
+	// 3. No knowledge of tile -> choose a random tile
+
+	if myTilesUpCnt == 1 {
+		for t := 0; t < tMax; t++ {
+			if state[t] == 0 && mem[t] == myTileId {
+				// Try to guzump. This is a race most likely won by opponent.
+				//log.Println("Bot", p, "choose known match", t)
+				return t, false
+			}
+		}
+
+		randTile := randomChoice(faceDownCnt, mem, state)
+		//log.Println("Bot", p, "second move [", myTileNum, "] chooses random tile", randTile)
+		return randTile, false
+	}
+
+	// Guzump is possible on move 1, scan memory for face-down match of
+	// opponent's tile
+	if oppTilesUpCnt == 1 {
+		for t := 0; t < tMax; t++ {
+			if state[t] == 0 && mem[t] == oppTileId {
+				// Try to guzump. This is a race most likely won by opponent.
+				//log.Println("Bot", p, "try guzump tile", t)
+				return t, false
+			}
+		}
+	}
+
+	// If move 1 (bot has either zero or two tiles upturned)
+	// Scan for face-down pairs: If pair found, pick one of these tile randomly
+	// Otherwise, choose a random tile
+
+	knownTiles := make([]int, int(tMax/2))
+	for t := 0; t < tMax; t++ {
+		if state[t] == 0 && mem[t] != 0 {
+			id := mem[t]
+			if knownTiles[id-1] == 0 {
+				// Remember this tile number
+				knownTiles[id-1] = t
+				continue
+			}
+
+			// This ID is non-zero, so have found a pair
+			// Randomly return either the first or second tile of the pair
+			r := rand.Intn(2)
+			ret_tile := knownTiles[id-1]
+			if r == 0 {
+				ret_tile = t
+			}
+			//log.Println("Bot", p, "first move chooses match", ret_tile)
+			return ret_tile, false
+		}
+	}
+
+	randTile := randomChoice(faceDownCnt, mem, state)
+	//log.Println("Bot", p, "first move chooses random tile", randTile)
+	return randTile, false
+}
+
+// ---------------------------------------------------------------------------
+// Random choice of face-down tiles (state == 0)
+//
+// Returns: tile to flip next
+// ---------------------------------------------------------------------------
+
+func randomChoice(faceDownCnt int, mem, state []int) int {
+	r := rand.Intn(faceDownCnt)
+
+	for t := 0; ; t++ {
+		if state[t] == 0 {
+			if r == 0 {
+				return t
+			}
+			r--
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
+// Seed random generator
+// ----------------------------------------------------------------------------
+
+func init() {
+	rand.Seed(time.Now().UnixNano())
+}
